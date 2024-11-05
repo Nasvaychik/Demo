@@ -1,414 +1,294 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import sqlite3
-import qrcode
-import os
-import requests
-import random
-import threading
-from PIL import Image, ImageTk
+from tkinter import filedialog, messagebox
 from datetime import datetime
-from docx import Document
-
-
-# Установка базы данных
-def setup_db():
-    conn = sqlite3.connect('hospital.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS patients (
-            id INTEGER PRIMARY KEY,
-            first_name TEXT,
-            last_name TEXT,
-            passport TEXT UNIQUE,
-            work_place TEXT,
-            insurance_number TEXT,
-            insurance_validity TEXT,
-            insurance_company TEXT,
-            medical_card_number TEXT UNIQUE,
-            photo_filename TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS hospitalizations (
-            id INTEGER PRIMARY KEY,
-            patient_id INTEGER,
-            hospitalization_code TEXT,
-            admission_date TEXT,
-            department TEXT,
-            payment_type TEXT,
-            additional_info TEXT,
-            FOREIGN KEY(patient_id) REFERENCES patients(id)
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS doctors (
-            id INTEGER PRIMARY KEY,
-            username TEXT UNIQUE,
-            password TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS referrals (
-            id INTEGER PRIMARY KEY,
-            patient_id INTEGER,
-            doctor_id INTEGER,
-            details TEXT,
-            FOREIGN KEY(patient_id) REFERENCES patients(id),
-            FOREIGN KEY(doctor_id) REFERENCES doctors(id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-
-class PatientRegistrationApp(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Регистрация пациента")
-        self.geometry("600x600")
-        self.setup_ui()
-
-    def setup_ui(self):
-        # Поля ввода для регистрации пациента
-        tk.Label(self, text="Имя пациента:").grid(row=0, column=0, sticky="w")
-        self.first_name_entry = tk.Entry(self)
-        self.first_name_entry.grid(row=0, column=1)
-
-        tk.Label(self, text="Фамилия:").grid(row=1, column=0, sticky="w")
-        self.last_name_entry = tk.Entry(self)
-        self.last_name_entry.grid(row=1, column=1)
-
-        tk.Label(self, text="Паспортные данные:").grid(row=2, column=0, sticky="w")
-        self.passport_entry = tk.Entry(self)
-        self.passport_entry.grid(row=2, column=1)
-
-        tk.Label(self, text="Место работы:").grid(row=3, column=0, sticky="w")
-        self.work_place_entry = tk.Entry(self)
-        self.work_place_entry.grid(row=3, column=1)
-
-        tk.Label(self, text="Страховой номер:").grid(row=4, column=0, sticky="w")
-        self.insurance_number_entry = tk.Entry(self)
-        self.insurance_number_entry.grid(row=4, column=1)
-
-        tk.Label(self, text="Срок действия страхового полиса:").grid(row=5, column=0, sticky="w")
-        self.insurance_validity_entry = tk.Entry(self)
-        self.insurance_validity_entry.grid(row=5, column=1)
-
-        tk.Label(self, text="Страховая компания:").grid(row=6, column=0, sticky="w")
-        self.insurance_company_entry = tk.Entry(self)
-        self.insurance_company_entry.grid(row=6, column=1)
-
-        tk.Label(self, text="Номер медкарты:").grid(row=7, column=0, sticky="w")
-        self.medical_card_number_entry = tk.Entry(self)
-        self.medical_card_number_entry.grid(row=7, column=1)
-
-        tk.Label(self, text="Фотография пациента:").grid(row=8, column=0, sticky="w")
-        self.photo_label = tk.Label(self, text="Нет файла")
-        self.photo_label.grid(row=8, column=1)
-        tk.Button(self, text="Загрузить", command=self.upload_photo).grid(row=8, column=2)
-
-        # Кнопки
-        tk.Button(self, text="Сохранить", command=self.save_patient).grid(row=9, column=0, columnspan=3)
-        tk.Button(self, text="Госпитализация", command=self.open_hospitalization_window).grid(row=10, column=0,
-                                                                                              columnspan=3)
-        tk.Button(self, text="Вход для врачей", command=self.doctor_login).grid(row=11, column=0, columnspan=3)
-
-    def upload_photo(self):
-        file_path = filedialog.askopenfilename(title="Выберите файл", filetypes=[("Image files", "*.jpg;*.jpeg;*.png")])
-        if file_path:
-            self.photo_filename = file_path
-            self.photo_label.config(text=os.path.basename(file_path))
-
-    def save_patient(self):
-        # Получение данных из полей
-        first_name = self.first_name_entry.get()
-        last_name = self.last_name_entry.get()
-        passport = self.passport_entry.get()
-        work_place = self.work_place_entry.get()
-        insurance_number = self.insurance_number_entry.get()
-        insurance_validity = self.insurance_validity_entry.get()
-        insurance_company = self.insurance_company_entry.get()
-        medical_card_number = self.medical_card_number_entry.get()
-
-        if not all([first_name, last_name, passport, medical_card_number]):
-            messagebox.showerror("Ошибка", "Пожалуйста, заполните все обязательные поля.")
-            return
-
-        # Проверка на наличие пациента в БД
-        conn = sqlite3.connect('hospital.db')
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM patients WHERE passport = ? OR medical_card_number = ?",
-                       (passport, medical_card_number))
-        if cursor.fetchone():
-            messagebox.showerror("Ошибка", "Пациент с такими паспортными данными или номером медкарты уже существует.")
-            conn.close()
-            return
-
-        # Сохранение пациента в БД
-        cursor.execute('''
-            INSERT INTO patients (first_name, last_name, passport, work_place, insurance_number, insurance_validity,
-                                  insurance_company, medical_card_number, photo_filename)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (first_name, last_name, passport, work_place, insurance_number, insurance_validity, insurance_company,
-              medical_card_number, self.photo_filename))
-
-        conn.commit()
-
-        # Генерация QR-кода
-        qr_code_filename = self.generate_qr_code(medical_card_number)
-        messagebox.showinfo("Успех", f"Пациент успешно зарегистрирован!\nQR-код сохранен: {qr_code_filename}")
-
-        # Очистка полей ввода
-        self.clear_fields()
-        conn.close()
-
-    def generate_qr_code(self, medical_card_number):
-        qr = qrcode.make(medical_card_number)
-        qr_filename = f'uploads/qr_{medical_card_number}.png'
-        if not os.path.exists('uploads'):
-            os.makedirs('uploads')
-        qr.save(qr_filename)
-        return qr_filename
-
-    def clear_fields(self):
-        self.first_name_entry.delete(0, tk.END)
-        self.last_name_entry.delete(0, tk.END)
-        self.passport_entry.delete(0, tk.END)
-        self.work_place_entry.delete(0, tk.END)
-        self.insurance_number_entry.delete(0, tk.END)
-        self.insurance_validity_entry.delete(0, tk.END)
-        self.insurance_company_entry.delete(0, tk.END)
-        self.medical_card_number_entry.delete(0, tk.END)
-        self.photo_label.config(text="Нет файла")
-
-    def open_hospitalization_window(self):
-        self.hospitalization_window = tk.Toplevel(self)
-        self.hospitalization_window.title("Госпитализация пациента")
-        self.hospitalization_window.geometry("600x400")
-
-        tk.Label(self.hospitalization_window, text="Код госпитализации:").grid(row=0, column=0, sticky="w")
-        self.hospitalization_code_entry = tk.Entry(self.hospitalization_window)
-        self.hospitalization_code_entry.grid(row=0, column=1)
-
-        tk.Button(self.hospitalization_window, text="Проверить пациента", command=self.check_patient).grid(row=1,
-                                                                                                           column=0,
-                                                                                                           columnspan=2)
-        tk.Button(self.hospitalization_window, text="Записать на госпитализацию",
-                  command=self.record_hospitalization).grid(row=2, column=0, columnspan=2)
-        tk.Button(self.hospitalization_window, text="Отказ от госпитализации",
-                  command=self.cancel_hospitalization).grid(row=3, column=0, columnspan=2)
-
-        self.info_label = tk.Label(self.hospitalization_window, text="", wraplength=500)
-        self.info_label.grid(row=4, column=0, columnspan=2)
-
-    def check_patient(self):
-        hospitalization_code = self.hospitalization_code_entry.get()
-        conn = sqlite3.connect('hospital.db')
-        cursor = conn.cursor()
-        cursor.execute('''SELECT p.first_name, p.last_name, p.passport, h.department, h.admission_date
-                          FROM hospitalizations h
-                          JOIN patients p ON h.patient_id = p.id
-                          WHERE h.hospitalization_code = ?''', (hospitalization_code,))
-        patient_info = cursor.fetchone()
-
-        if patient_info:
-            self.info_label.config(
-                text=f"Пациент: {patient_info[0]} {patient_info[1]}\nПаспорт: {patient_info[2]}\nОтделение: {patient_info[3]}\nДата госпитализации: {patient_info[4]}")
-        else:
-            messagebox.showerror("Ошибка", "Пациент не найден.")
-        conn.close()
-
-    def record_hospitalization(self):
-        hospitalization_code = self.hospitalization_code_entry.get()
-        conn = sqlite3.connect('hospital.db')
-        cursor = conn.cursor()
-
-        # Check if the hospitalization code is valid
-        cursor.execute('''SELECT id FROM patients WHERE medical_card_number = ?''', (hospitalization_code,))
-        patient = cursor.fetchone()
-
-        if not patient:
-            messagebox.showerror("Ошибка", "Пациент не найден.")
-            conn.close()
-            return
-
-        patient_id = patient[0]
-
-        # Display hospitalization details and get user input
-        admission_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        department = "Терапия"  # Default department, can be changed
-        payment_type = "Платно"  # Default payment type, can be changed
-        additional_info = "Без дополнительных условий"  # Default additional info, can be changed
-
-        # Insert hospitalization record
-        cursor.execute('''
-            INSERT INTO hospitalizations (patient_id, hospitalization_code, admission_date, department, payment_type, additional_info)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (patient_id, hospitalization_code, admission_date, department, payment_type, additional_info))
-
-        conn.commit()
-        conn.close()
-
-        messagebox.showinfo("Успех", f"Пациент успешно записан на госпитализацию с кодом {hospitalization_code}.")
-
-    def cancel_hospitalization(self):
-        hospitalization_code = self.hospitalization_code_entry.get()
-
-        conn = sqlite3.connect('hospital.db')
-        cursor = conn.cursor()
-
-        # Check if the hospitalization exists
-        cursor.execute('''SELECT * FROM hospitalizations WHERE hospitalization_code = ?''', (hospitalization_code,))
-        if cursor.fetchone() is None:
-            messagebox.showerror("Ошибка", "Госпитализация с таким кодом не найдена.")
-            conn.close()
-            return
-
-        reason = "Отмена по просьбе пациента"  # Reason for cancellation, can be improved
-        cursor.execute('''
-            DELETE FROM hospitalizations WHERE hospitalization_code = ?
-        ''', (hospitalization_code,))
-        conn.commit()
-        conn.close()
-
-        messagebox.showinfo("Успех", f"Госпитализация с кодом {hospitalization_code} отменена. Причина: {reason}.")
-
-    def doctor_login(self):
-        self.login_window = tk.Toplevel(self)
-        self.login_window.title("Вход для врачей")
-        self.login_window.geometry("300x200")
-
-        tk.Label(self.login_window, text="Логин:").grid(row=0, column=0)
-        self.username_entry = tk.Entry(self.login_window)
-        self.username_entry.grid(row=0, column=1)
-
-        tk.Label(self.login_window, text="Пароль:").grid(row=1, column=0)
-        self.password_entry = tk.Entry(self.login_window, show="*")
-        self.password_entry.grid(row=1, column=1)
-
-        tk.Button(self.login_window, text="Войти", command=self.check_doctor_login).grid(row=2, columnspan=2)
-
-    def check_doctor_login(self):
-        username = self.username_entry.get()
-        password = self.password_entry.get()
-
-        conn = sqlite3.connect('hospital.db')
-        cursor = conn.cursor()
-        cursor.execute('''SELECT * FROM doctors WHERE username = ? AND password = ?''', (username, password))
-        doctor = cursor.fetchone()
-
-        if doctor:
-            messagebox.showinfo("Успех", "Вход успешен!")
-            self.open_patient_info_window(doctor[0])  # Pass doctor ID
-        else:
-            messagebox.showerror("Ошибка", "Неверный логин или пароль.")
-        conn.close()
-
-    def open_patient_info_window(self, doctor_id):
-        self.patient_info_window = tk.Toplevel(self)
-        self.patient_info_window.title("Информация о пациенте")
-        self.patient_info_window.geometry("600x400")
-
-        tk.Label(self.patient_info_window, text="Номер медицинской карты:").grid(row=0, column=0, sticky="w")
-        self.medical_card_entry = tk.Entry(self.patient_info_window)
-        self.medical_card_entry.grid(row=0, column=1)
-
-        tk.Button(self.patient_info_window, text="Просмотреть информацию",
-                  command=lambda: self.view_patient_info(doctor_id)).grid(row=1, columnspan=2)
-        tk.Button(self.patient_info_window, text="Создать направление",
-                  command=lambda: self.create_referral(doctor_id)).grid(row=2, columnspan=2)
-        tk.Button(self.patient_info_window, text="Отслеживание перемещения",
-                  command=lambda: self.track_movement(doctor_id)).grid(row=3, columnspan=2)
-
-        self.patient_info_label = tk.Label(self.patient_info_window, text="", wraplength=500)
-        self.patient_info_label.grid(row=4, column=0, columnspan=2)
-
-    def view_patient_info(self, doctor_id):
-        medical_card_number = self.medical_card_entry.get()
-
-        conn = sqlite3.connect('hospital.db')
-        cursor = conn.cursor()
-        cursor.execute(
-            '''SELECT first_name, last_name, passport, work_place FROM patients WHERE medical_card_number = ?''',
-            (medical_card_number,))
-        patient_info = cursor.fetchone()
-
-        if patient_info:
-            self.patient_info_label.config(
-                text=f"Пациент: {patient_info[0]} {patient_info[1]}\nПаспорт: {patient_info[2]}\nМесто работы: {patient_info[3]}")
-        else:
-            messagebox.showerror("Ошибка", "Пациент не найден.")
-        conn.close()
-
-    def create_referral(self, doctor_id):
-        medical_card_number = self.medical_card_entry.get()
-        details = tk.simpledialog.askstring("Направление", "Введите детали направления:")
-
-        if details:
-            conn = sqlite3.connect('hospital.db')
-            cursor = conn.cursor()
-            cursor.execute('''SELECT id FROM patients WHERE medical_card_number = ?''', (medical_card_number,))
-            patient = cursor.fetchone()
-
-            if patient:
-                cursor.execute('''INSERT INTO referrals (patient_id, doctor_id, details) VALUES (?, ?, ?)''',
-                               (patient[0], doctor_id, details))
-                conn.commit()
-                messagebox.showinfo("Успех", "Направление успешно создано.")
-            else:
-                messagebox.showerror("Ошибка", "Пациент не найден.")
-            conn.close()
-
-    def track_movement(self, doctor_id):
-        self.movement_window = tk.Toplevel(self)
-        self.movement_window.title("Отслеживание перемещения")
-        self.movement_window.geometry("800x600")
-
-        self.canvas = tk.Canvas(self.movement_window, width=800, height=600, bg="white")
-        self.canvas.pack()
-
-        self.map_image = Image.open("hospital_map.png")  # Укажите путь к изображению карты больницы
-        self.map_photo = ImageTk.PhotoImage(self.map_image)
-        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.map_photo)
-
-        self.persons = {}  # Хранит местоположение клиентов и сотрудников
-        self.update_movement(doctor_id)
-
-    def update_movement(self, doctor_id):
-        try:
-            response = requests.get("http://10.30.76.66:8082/PersonLocations")
-            if response.status_code == 200:
-                self.canvas.delete("person")  # Удалить предыдущие кружочки
-                data = response.json()
-
-                for person in data:
-                    person_code = person['PersonCode']
-                    role = person['PersonRole']
-                    last_security_point_time = person['LastSecurityPointTime']
-                    if role == "Клиент":
-                        color = "green"
-                    elif role == "Сотрудник":
-                        color = "blue"
-                    else:
-                        continue
-
-                    # Генерация случайных координат внутри помещения
-                    x = random.randint(50, 750)
-                    y = random.randint(50, 550)
-
-                    # Добавление кружочка на карту
-                    self.canvas.create_oval(x, y, x + 10, y + 10, fill=color, tags="person")
-                    self.persons[person_code] = (x, y)
-
-            # Повторное обновление через 3 секунды
-            self.movement_window.after(3000, lambda: self.update_movement(doctor_id))
-        except requests.exceptions.RequestException as e:
-            messagebox.showerror("Ошибка", "Не удалось получить данные о перемещении. Проверьте соединение.")
-
-
-if __name__ == "__main__":
-    setup_db()
-    app = PatientRegistrationApp()
-    app.mainloop()
+
+
+# Функция для регистрации пациента
+def submit_patient_data():
+    # Собираем данные из полей
+    patient_data = {
+        "first_name": first_name.get(),
+        "last_name": last_name.get(),
+        "patronymic": patronymic.get(),
+        "passport_number": passport_number.get(),
+        "passport_series": passport_series.get(),
+        "date_of_birth": date_of_birth.get(),
+        "gender": gender_var.get(),
+        "address": address.get(),
+        "phone_number": phone_number.get(),
+        "email": email.get(),
+        "medical_card_number": medical_card_number.get(),
+        "medical_card_issue_date": medical_card_issue_date.get(),
+        "last_visit_date": last_visit_date.get(),
+        "next_visit_date": next_visit_date.get(),
+        "insurance_policy_number": insurance_policy_number.get(),
+        "insurance_policy_expiry": insurance_policy_expiry.get(),
+        "diagnosis": diagnosis.get(),
+        "medical_history": medical_history.get("1.0", "end-1c"),
+        "photo": photo_data  # Сохраняем фото как бинарные данные
+    }
+
+    # Выводим данные (в реальном случае можно отправить их в базу данных)
+    print("Пациент зарегистрирован:", patient_data)
+
+    # Покажем сообщение об успешной регистрации
+    messagebox.showinfo("Успех", "Пациент успешно зарегистрирован!")
+
+
+# Обработчик выбора файла (фото пациента)
+def on_file_pick():
+    global photo_data
+    file_path = filedialog.askopenfilename(title="Выберите фото",
+                                           filetypes=(("Image files", "*.jpg;*.jpeg;*.png"), ("All files", "*.*")))
+    if file_path:
+        with open(file_path, "rb") as file:
+            photo_data = file.read()  # Сохраняем фото как бинарные данные
+        photo_label.config(text="Фото выбрано: " + file_path.split('/')[-1])  # Отображаем название файла
+
+
+# Функция для записи на госпитализацию
+def hospitalization():
+    hospitalization_code = hospitalization_code_entry.get()
+
+    # Если код госпитализации введен
+    if hospitalization_code:
+        # Вводим данные о госпитализации
+        hospitalization_data = {
+            "code": hospitalization_code,
+            "first_name": first_name.get(),
+            "last_name": last_name.get(),
+            "diagnosis": diagnosis.get(),
+            "department": department.get(),
+            "hospitalization_goal": hospitalization_goal.get(),
+            "payment_type": payment_type_var.get(),
+            "hospitalization_dates": hospitalization_dates.get(),
+            "additional_info": additional_info.get("1.0", "end-1c"),
+        }
+
+        print("Данные госпитализации:", hospitalization_data)
+
+        # Показать информацию о госпитализации
+        hospitalization_info = f"Код госпитализации: {hospitalization_data['code']}\n"
+        hospitalization_info += f"Пациент: {hospitalization_data['first_name']} {hospitalization_data['last_name']}\n"
+        hospitalization_info += f"Диагноз: {hospitalization_data['diagnosis']}\n"
+        hospitalization_info += f"Цель госпитализации: {hospitalization_data['hospitalization_goal']}\n"
+        hospitalization_info += f"Отделение: {hospitalization_data['department']}\n"
+        hospitalization_info += f"Тип оплаты: {hospitalization_data['payment_type']}\n"
+        hospitalization_info += f"Сроки госпитализации: {hospitalization_data['hospitalization_dates']}\n"
+        hospitalization_info += f"Доп. информация: {hospitalization_data['additional_info']}"
+
+        hospitalization_display_label.config(text=hospitalization_info)
+    else:
+        messagebox.showwarning("Ошибка", "Введите код госпитализации.")
+
+
+# Функция для отмены госпитализации
+def cancel_hospitalization():
+    reason = cancel_reason_entry.get("1.0", "end-1c")
+
+    if reason:
+        messagebox.showinfo("Отмена госпитализации", f"Госпитализация отменена по причине: {reason}")
+    else:
+        messagebox.showwarning("Ошибка", "Введите причину отмены госпитализации.")
+
+
+# Создание главного окна
+root = tk.Tk()
+root.title("Госпитализация пациента")
+root.geometry("1000x1000")
+
+# Переменная для хранения данных фото
+photo_data = None
+
+# Создаем виджеты для данных пациента
+first_name_label = tk.Label(root, text="Имя пациента:")
+first_name = tk.Entry(root)
+
+last_name_label = tk.Label(root, text="Фамилия пациента:")
+last_name = tk.Entry(root)
+
+patronymic_label = tk.Label(root, text="Отчество пациента:")
+patronymic = tk.Entry(root)
+
+passport_number_label = tk.Label(root, text="Номер паспорта:")
+passport_number = tk.Entry(root)
+
+passport_series_label = tk.Label(root, text="Серия паспорта:")
+passport_series = tk.Entry(root)
+
+date_of_birth_label = tk.Label(root, text="Дата рождения пациента:")
+date_of_birth = tk.Entry(root)
+
+gender_label = tk.Label(root, text="Пол пациента:")
+gender_var = tk.StringVar(value="Мужской")
+gender_male = tk.Radiobutton(root, text="Мужской", variable=gender_var, value="Мужской")
+gender_female = tk.Radiobutton(root, text="Женский", variable=gender_var, value="Женский")
+
+address_label = tk.Label(root, text="Адрес пациента:")
+address = tk.Entry(root)
+
+phone_number_label = tk.Label(root, text="Телефонный номер пациента:")
+phone_number = tk.Entry(root)
+
+email_label = tk.Label(root, text="Электронный адрес пациента:")
+email = tk.Entry(root)
+
+medical_card_number_label = tk.Label(root, text="Номер медицинской карты:")
+medical_card_number = tk.Entry(root)
+
+medical_card_issue_date_label = tk.Label(root, text="Дата выдачи медицинской карты:")
+medical_card_issue_date = tk.Entry(root)
+
+last_visit_date_label = tk.Label(root, text="Дата последнего обращения:")
+last_visit_date = tk.Entry(root)
+
+next_visit_date_label = tk.Label(root, text="Дата следующего визита:")
+next_visit_date = tk.Entry(root)
+
+insurance_policy_number_label = tk.Label(root, text="Номер страхового полиса:")
+insurance_policy_number = tk.Entry(root)
+
+insurance_policy_expiry_label = tk.Label(root, text="Дата окончания полиса:")
+insurance_policy_expiry = tk.Entry(root)
+
+diagnosis_label = tk.Label(root, text="Диагноз пациента:")
+diagnosis = tk.Entry(root)
+
+medical_history_label = tk.Label(root, text="История болезни пациента:")
+medical_history = tk.Text(root, height=5, width=50)
+
+# Ввод кода госпитализации
+hospitalization_code_label = tk.Label(root, text="Введите код госпитализации:")
+hospitalization_code_entry = tk.Entry(root)
+
+# Поля для записи госпитализации
+department_label = tk.Label(root, text="Отделение госпитализации:")
+department = tk.Entry(root)
+
+hospitalization_goal_label = tk.Label(root, text="Цель госпитализации:")
+hospitalization_goal = tk.Entry(root)
+
+payment_type_label = tk.Label(root, text="Тип оплаты:")
+payment_type_var = tk.StringVar(value="Бюджет")
+payment_type_budget = tk.Radiobutton(root, text="Бюджет", variable=payment_type_var, value="Бюджет")
+payment_type_paid = tk.Radiobutton(root, text="Платно", variable=payment_type_var, value="Платно")
+
+hospitalization_dates_label = tk.Label(root, text="Сроки госпитализации:")
+hospitalization_dates = tk.Entry(root)
+
+additional_info_label = tk.Label(root, text="Доп. информация:")
+additional_info = tk.Text(root, height=4, width=50)
+
+# Поле для вывода информации о госпитализации
+hospitalization_display_label = tk.Label(root, text="Информация о госпитализации будет отображаться здесь.",
+                                         justify="left", anchor="w")
+
+# Кнопки для работы с госпитализацией
+submit_hospitalization_button = tk.Button(root, text="Записать на госпитализацию", command=hospitalization)
+
+# Поле для отмены госпитализации
+cancel_reason_label = tk.Label(root, text="Причина отмены госпитализации:")
+cancel_reason_entry = tk.Text(root, height=4, width=50)
+
+cancel_hospitalization_button = tk.Button(root, text="Отменить госпитализацию", command=cancel_hospitalization)
+
+# Кнопка для регистрации пациента
+submit_button = tk.Button(root, text="Зарегистрировать пациента", command=submit_patient_data)
+
+# Кнопка для загрузки фото
+photo_label = tk.Label(root, text="Фото пациента:")
+photo_button = tk.Button(root, text="Загрузить фото", command=on_file_pick)
+
+# Размещение виджетов на экране
+first_name_label.grid(row=0, column=0, sticky="w")
+first_name.grid(row=0, column=1)
+
+last_name_label.grid(row=1, column=0, sticky="w")
+last_name.grid(row=1, column=1)
+
+patronymic_label.grid(row=2, column=0, sticky="w")
+patronymic.grid(row=2, column=1)
+
+passport_number_label.grid(row=3, column=0, sticky="w")
+passport_number.grid(row=3, column=1)
+
+passport_series_label.grid(row=4, column=0, sticky="w")
+passport_series.grid(row=4, column=1)
+
+date_of_birth_label.grid(row=5, column=0, sticky="w")
+date_of_birth.grid(row=5, column=1)
+
+gender_label.grid(row=6, column=0, sticky="w")
+gender_male.grid(row=6, column=1)
+gender_female.grid(row=6, column=2)
+
+address_label.grid(row=7, column=0, sticky="w")
+address.grid(row=7, column=1)
+
+phone_number_label.grid(row=8, column=0, sticky="w")
+phone_number.grid(row=8, column=1)
+
+email_label.grid(row=9, column=0, sticky="w")
+email.grid(row=9, column=1)
+
+medical_card_number_label.grid(row=10, column=0, sticky="w")
+medical_card_number.grid(row=10, column=1)
+
+medical_card_issue_date_label.grid(row=11, column=0, sticky="w")
+medical_card_issue_date.grid(row=11, column=1)
+
+last_visit_date_label.grid(row=12, column=0, sticky="w")
+last_visit_date.grid(row=12, column=1)
+
+next_visit_date_label.grid(row=13, column=0, sticky="w")
+next_visit_date.grid(row=13, column=1)
+
+insurance_policy_number_label.grid(row=14, column=0, sticky="w")
+insurance_policy_number.grid(row=14, column=1)
+
+insurance_policy_expiry_label.grid(row=15, column=0, sticky="w")
+insurance_policy_expiry.grid(row=15, column=1)
+
+diagnosis_label.grid(row=16, column=0, sticky="w")
+diagnosis.grid(row=16, column=1)
+
+medical_history_label.grid(row=17, column=0, sticky="w")
+medical_history.grid(row=17, column=1)
+
+# Размещение новых полей для госпитализации
+hospitalization_code_label.grid(row=18, column=0, sticky="w")
+hospitalization_code_entry.grid(row=18, column=1)
+
+department_label.grid(row=19, column=0, sticky="w")
+department.grid(row=19, column=1)
+
+hospitalization_goal_label.grid(row=20, column=0, sticky="w")
+hospitalization_goal.grid(row=20, column=1)
+
+payment_type_label.grid(row=21, column=0, sticky="w")
+payment_type_budget.grid(row=21, column=1)
+payment_type_paid.grid(row=21, column=2)
+
+hospitalization_dates_label.grid(row=22, column=0, sticky="w")
+hospitalization_dates.grid(row=22, column=1)
+
+additional_info_label.grid(row=23, column=0, sticky="w")
+additional_info.grid(row=23, column=1)
+
+hospitalization_display_label.grid(row=24, column=0, columnspan=2, sticky="w")
+
+# Кнопки для действий
+submit_hospitalization_button.grid(row=25, column=0, columnspan=2)
+
+cancel_reason_label.grid(row=26, column=0, sticky="w")
+cancel_reason_entry.grid(row=26, column=1)
+
+cancel_hospitalization_button.grid(row=27, column=0, columnspan=2)
+
+photo_label.grid(row=28, column=0, sticky="w")
+photo_button.grid(row=28, column=1)
+
+submit_button.grid(row=29, column=0, columnspan=2)
+
+# Запуск приложения
+root.mainloop()
